@@ -1,0 +1,7 @@
+simulated_sensor,x_m,estimated_mean_C,estimated_amplitude_C,simulator_ambient_C
+T0,0,40.0,14.7,22
+T1,0.036,37.7,8.4,22
+T2,0.084,35.4,4.0,22
+T3,0.144,33.2,1.7,22
+T4,0.216,31.6,0.6,22
+T5,0.285,31.1,0.3,22

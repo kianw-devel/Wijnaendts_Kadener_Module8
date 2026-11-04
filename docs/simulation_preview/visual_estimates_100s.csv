@@ -1,0 +1,7 @@
+simulated_sensor,x_m,estimated_mean_C,estimated_amplitude_C,simulator_ambient_C,amplitude_note
+T0,0,40.0,14.3,22,rough visual estimate
+T1,0.036,37.7,6.6,22,rough visual estimate
+T2,0.084,35.3,2.5,22,rough visual estimate
+T3,0.144,33.4,0.6,22,rough visual estimate; low resolution
+T4,0.216,31.7,,22,not reliably resolved from screenshot
+T5,0.285,31.1,,22,not reliably resolved from screenshot

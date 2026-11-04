@@ -1,0 +1,25 @@
+time_s,gui_setpoint_C,controller_mode,kp_pwm_per_C,ki_pwm_per_C_s,requested_signed_pwm,commanded_signed_pwm,waveform,Ta_C,Tb_C,period_s,wave_origin_s,phase_rad,segment_id,ambient_C,heating_chi_C_per_pwm,cooling_chi_C_per_pwm,feedforward_source,output_stopped,host_monotonic_s
+0.75,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315334.957648833
+1.47,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315334.957998625
+2.2,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315335.621476916
+2.93,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315336.407353208
+3.66,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315337.107406625
+4.39,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315337.806862416
+5.11,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315338.606739666
+5.84,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315339.307064833
+6.57,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315340.025419375
+7.3,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315340.806633
+8.03,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315341.527345666
+8.75,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315342.207218291
+9.48,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315342.90731
+10.21,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315343.70693275
+10.94,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315344.407176166
+11.67,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315345.107638791
+12.39,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315345.907287041
+13.12,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315346.971966541
+13.85,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315347.406602458
+14.58,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315348.072526083
+15.31,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315349.27780125
+16.03,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315349.527220083
+16.76,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315350.222220875
+17.49,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872,0.20,linear approximation (not a measured curve),True,315351.007197125

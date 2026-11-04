@@ -17,7 +17,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 
 # ---------- Settings to change before running ----------
-SERIAL_PORT = "/dev/cu.usbmodem101"  # Change to your Arduino's serial port
+SERIAL_PORT = "/dev/cu.usbmodem1101"  # Change to your Arduino's serial port
 BAUD_RATE = 9600
 WINDOW_DURATION_SECONDS = 600.0
 UPDATE_INTERVAL_MILLISECONDS = 100
@@ -77,6 +77,11 @@ def calculate_p_control(setpoint, temperature, gain):
     direction = "HEAT" if signed_pwm >= 0 else "COOL"
     pwm = max(0, min(255, int(round(abs(signed_pwm)))))
     return error, signed_pwm, pwm, direction
+
+
+def compensate_cooling(raw_command, ratio):
+    """Scale a negative controller command before applying ±255 saturation."""
+    return raw_command if raw_command >= 0 else ratio * raw_command
 
 
 def sine_setpoint(time_s, origin_s, mean_c, amplitude_c, period_s):
@@ -143,13 +148,14 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         self.integral_output = 0.0
         self.requested_output = 0.0
         self.applied_output = 0.0
+        self.raw_controller_output = 0.0
         self.wave_running = False
         self.wave_origin_s = None
         self.wave_mean_c = 40.0
         self.wave_amplitude_c = 10.0
         self.wave_period_s = 100.0
         self.feedforward_points = None
-        self.feedforward_source = "linear approximation (not a measured curve)"
+        self.feedforward_source = "No measured curve loaded"
         self.last_valid_host_time = None
         self.output_stopped = True
         self.segment_id = 0
@@ -254,7 +260,11 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         live_values.addRow("Error", self.error_value)
         live_values.addRow("uP", self.proportional_pwm_value)
         live_values.addRow("uI", self.integral_pwm_value)
-        live_values.addRow("Requested u", self.requested_pwm_value)
+        self.raw_controller_value = QtWidgets.QLabel("0.00")
+        self.ratio_value = QtWidgets.QLabel("2.4902")
+        live_values.addRow("Raw P/PI command", self.raw_controller_value)
+        live_values.addRow("Cooling multiplier r", self.ratio_value)
+        live_values.addRow("Compensated request", self.requested_pwm_value)
         live_values.addRow("Applied u", self.applied_pwm_value)
         controls_layout.addLayout(live_values, 7, 0, 1, 4)
 
@@ -265,25 +275,25 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         self.amplitude_input = QtWidgets.QLineEdit("10")
         self.period_input = QtWidgets.QLineEdit("100")
         self.ambient_input = QtWidgets.QLineEdit("22")
-        self.heating_chi_input = QtWidgets.QLineEdit("0.4872")
-        self.cooling_chi_input = QtWidgets.QLineEdit("0.20")
+        self.heating_chi_input = QtWidgets.QLineEdit("0.4872434257285")
+        self.cooling_chi_input = QtWidgets.QLineEdit("0.19566755027076152")
         for label, widget in (
             ("Mean Ta (°C)", self.mean_input), ("Amplitude Tb (°C)", self.amplitude_input),
             ("Period (s; minimum 100)", self.period_input),
             ("Measured room temperature (°C)", self.ambient_input),
-            ("Linear heating χ (°C/PWM)", self.heating_chi_input),
-            ("Linear cooling χ (°C/PWM)", self.cooling_chi_input),
+            ("Measured heating χ (°C/PWM)", self.heating_chi_input),
+            ("Measured cooling χ (°C/PWM)", self.cooling_chi_input),
         ):
             wave_layout.addRow(label, widget)
-        self.allow_linear = QtWidgets.QCheckBox("Use linear approximation for feedforward (not a measured curve)")
-        wave_layout.addRow(self.allow_linear)
         self.load_curve_button = QtWidgets.QPushButton("Load measured steady-state curve CSV")
         self.load_curve_button.clicked.connect(self.load_feedforward_curve)
         wave_layout.addRow(self.load_curve_button)
+        for widget in (self.heating_chi_input, self.cooling_chi_input):
+            widget.editingFinished.connect(self.compensation_changed)
         self.curve_label = QtWidgets.QLabel("No measured curve loaded")
         self.curve_label.setWordWrap(True)
         wave_layout.addRow(self.curve_label)
-        self.wave_status = QtWidgets.QLabel("Output stopped. Default waveform: 30–50 °C. Verify hardware limits.")
+        self.wave_status = QtWidgets.QLabel("Prepared reduced pilot: 30–50 °C, 100 s. Historical curve requires apparatus verification; output stopped.")
         self.wave_status.setWordWrap(True)
         wave_layout.addRow(self.wave_status)
         self.start_wave_button = QtWidgets.QPushButton("Start / apply sine settings")
@@ -342,8 +352,13 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         )
         self.requested_pwm_curve = self.pwm_plot.plot(
             pen=pg.mkPen("#7b3294", width=1, style=QtCore.Qt.PenStyle.DashLine),
-            name="Requested u",
+            name="Compensated request",
         )
+
+        self.raw_controller_curve = self.pwm_plot.plot(
+            pen=pg.mkPen("#888888", width=1), name="Raw P/PI command"
+        )
+        self.raw_controller_pwms = deque()
 
         # Two resizable columns: scrollable controls left, stacked graphs right.
         central_widget = QtWidgets.QWidget()
@@ -405,6 +420,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             "waveform", "Ta_C", "Tb_C", "period_s", "wave_origin_s", "phase_rad",
             "segment_id", "ambient_C", "heating_chi_C_per_pwm", "cooling_chi_C_per_pwm",
             "feedforward_source", "output_stopped", "host_monotonic_s",
+            "raw_controller_signed_pwm", "cooling_multiplier_r", "measured_rod_base_C",
         ])
         self.command_file.flush()
         event_path = path.with_name(path.stem + "_events.jsonl")
@@ -436,6 +452,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             self.proportional_pwms,
             self.integral_pwms,
             self.requested_pwms,
+            self.raw_controller_pwms,
         ):
             values.clear()
         for values in self.sensor_temperatures.values():
@@ -484,7 +501,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         elif self.wave_running:
             if mode == "Open-loop feedforward" and not self.feedforward_ready():
                 self.stop_output()
-                self.wave_status.setText("Feedforward unavailable: load a curve or explicitly select approximation.")
+                self.wave_status.setText("Feedforward unavailable: load a measured steady-state curve.")
         self.segment_id += 1
         self.log_event("controller_mode_changed")
 
@@ -548,13 +565,21 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             self.send_control_command(0, "HEAT")
             return
 
+        try:
+            ratio = self.cooling_ratio()
+        except ValueError as error:
+            self.stop_output()
+            self.wave_status.setText(str(error))
+            return
         error = self.setpoint - self.latest_temperature
         u_p = self.proportional_gain * error
 
         if self.control_mode.currentText() == "PI" and delta_time > 0.0:
             candidate_integral = self.integral_error + error * delta_time
             candidate_u_i = self.integral_gain * candidate_integral
-            candidate_request = u_p + candidate_u_i
+            # Saturation occurs AFTER cooling scaling, so test that same command.
+            candidate_raw = u_p + candidate_u_i
+            candidate_request = compensate_cooling(candidate_raw, ratio)
             pushes_high = candidate_request > PWM_LIMIT and error > 0.0
             pushes_low = candidate_request < -PWM_LIMIT and error < 0.0
             if not (pushes_high or pushes_low):
@@ -566,7 +591,10 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             self.integral_error = 0.0
             u_i = 0.0
 
-        requested = u_p + u_i
+        self.raw_controller_output = u_p + u_i
+        requested = compensate_cooling(self.raw_controller_output, ratio)
+        self.raw_controller_value.setText(f"{self.raw_controller_output:.2f}")
+        self.ratio_value.setText(f"{ratio:.4f}")
         applied = max(-PWM_LIMIT, min(PWM_LIMIT, requested))
         direction = "HEAT" if applied >= 0.0 else "COOL"
         pwm = int(round(abs(applied)))
@@ -648,7 +676,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                 self.stop_output()
                 self.wave_status.setText("Arduino clock reset: stopped. Restart drive explicitly.")
                 for values in (self.times, self.setpoints, self.errors, self.signed_pwms,
-                               self.proportional_pwms, self.integral_pwms, self.requested_pwms):
+                               self.proportional_pwms, self.integral_pwms, self.requested_pwms, self.raw_controller_pwms):
                     values.clear()
                 for values in self.sensor_temperatures.values():
                     values.clear()
@@ -668,9 +696,13 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                 self.setpoint = sine_setpoint(time_seconds, self.wave_origin_s,
                                               self.wave_mean_c, self.wave_amplitude_c, self.wave_period_s)
 
-            if measurement["safety"] != "OK" or temperature <= 5 or temperature >= MAXIMUM_SETPOINT_C:
+            rod_base = float(measurement["rod1_C"])
+            # T1 is monitored for the Module 8 rod-base limit; A0 still supplies PI.
+            if (measurement["safety"] != "OK" or temperature <= 5
+                    or temperature >= MAXIMUM_SETPOINT_C or rod_base >= 56.0):
+                self.latest_temperature = None
                 self.stop_output()
-                self.wave_status.setText("Stopped: TEC interlock (host range 5–56 C). Restart explicitly after recovery.")
+                self.wave_status.setText("Stopped: A0 safety or T1 rod-base 56 C limit. Restart explicitly after recovery.")
                 self.send_control_command(0, "HEAT")
                 self.set_pwm_value(0)
                 self.zero_integral(update_output=False)
@@ -691,6 +723,8 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                 self.applied_output = self.requested_output
                 self.proportional_pwm_value.setText("0.00")
                 self.integral_pwm_value.setText("0.00")
+                self.raw_controller_output = float("nan")  # Manual mode has no P/PI command.
+                self.raw_controller_value.setText("—")
                 self.requested_pwm_value.setText(f"{self.requested_output:.2f}")
                 self.applied_pwm_value.setText(f"{self.applied_output:.0f}")
 
@@ -707,6 +741,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                 self.segment_id, self.ambient_input.text(), self.heating_chi_input.text(),
                 self.cooling_chi_input.text(), self.feedforward_source,
                 self.output_stopped, time.monotonic(),
+                self.raw_controller_output, self.ratio_value.text(), rod_base,
             ])
             self.command_file.flush()
             error = self.setpoint - temperature
@@ -724,6 +759,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             self.proportional_pwms.append(self.proportional_output)
             self.integral_pwms.append(self.integral_output)
             self.requested_pwms.append(self.requested_output)
+            self.raw_controller_pwms.append(self.raw_controller_output)
 
             self.temperature_value.setText(f"{temperature:.2f} C")
             self.pwm_value.setText(str(pwm))
@@ -742,6 +778,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                 self.proportional_pwms.popleft()
                 self.integral_pwms.popleft()
                 self.requested_pwms.popleft()
+                self.raw_controller_pwms.popleft()
 
         # Refresh both plots after processing the available serial data.
         # Each trace reads the deque with its own CSV column name.
@@ -755,6 +792,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         )
         self.integral_pwm_curve.setData(list(self.times), list(self.integral_pwms))
         self.requested_pwm_curve.setData(list(self.times), list(self.requested_pwms))
+        self.raw_controller_curve.setData(list(self.times), list(self.raw_controller_pwms))
 
     def log_event(self, event):
         """Save control changes without splitting the continuous raw record."""
@@ -767,7 +805,9 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                       wave_running=self.wave_running, output_stopped=self.output_stopped,
                       Ta_C=self.wave_mean_c, Tb_C=self.wave_amplitude_c,
                       period_s=self.wave_period_s, phase_origin_s=self.wave_origin_s,
-                      segment_id=self.segment_id, feedforward_source=self.feedforward_source)
+                      segment_id=self.segment_id, feedforward_source=self.feedforward_source,
+                      heating_chi=self.heating_chi_input.text(), cooling_chi=self.cooling_chi_input.text(),
+                      ambient_C=self.ambient_input.text())
         self.event_file.write(json.dumps(record) + "\n")
         self.event_file.flush()
 
@@ -778,13 +818,34 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         self.output_stopped = True
         self.zero_integral(update_output=False)
         self.proportional_output = self.requested_output = self.applied_output = 0.0
+        self.raw_controller_output = 0.0
+        self.raw_controller_value.setText("0.00")
+        self.proportional_pwm_value.setText("0.00")
+        self.requested_pwm_value.setText("0.00")
+        self.applied_pwm_value.setText("0")
         self.set_pwm_value(0)
         self.send_control_command(0, "HEAT")
         self.wave_status.setText("Output stopped; acquisition continues.")
         self.log_event("stop_zero_output")
 
+    def compensation_changed(self):
+        self.stop_output()
+        try:
+            self.ratio_value.setText(f"{self.cooling_ratio():.4f}")
+        except ValueError as error:
+            self.wave_status.setText(str(error))
+        self.log_event("measured_compensation_changed")
+
+    def cooling_ratio(self):
+        """Measured static actuator scaling, used identically in P and PI."""
+        heat = float(self.heating_chi_input.text())
+        cool = float(self.cooling_chi_input.text())
+        if not all(math.isfinite(v) and v > 0 for v in (heat, cool)):
+            raise ValueError("Measured susceptibilities must be finite and positive.")
+        return heat / cool
+
     def feedforward_ready(self):
-        return self.feedforward_points is not None or self.allow_linear.isChecked()
+        return self.feedforward_points is not None
 
     def load_feedforward_curve(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Measured steady-state curve", "", "CSV (*.csv)")
@@ -825,7 +886,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                 raise ValueError("Room temperature must be finite and susceptibilities positive.")
             if self.control_mode.currentText() == "Open-loop feedforward":
                 if not self.feedforward_ready():
-                    raise ValueError("Load a measured curve, or explicitly select the linear approximation.")
+                    raise ValueError("Load the measured steady-state curve before the open-loop trial.")
                 if self.feedforward_points is not None:
                     invert_curve(self.feedforward_points,mean-amplitude)
                     invert_curve(self.feedforward_points,mean+amplitude)
@@ -833,6 +894,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self,"Cannot start sine",str(error))
             return
         self.stop_output()
+        self.ratio_value.setText(f"{heat/cool:.4f}")
         self.wave_mean_c, self.wave_amplitude_c, self.wave_period_s = mean, amplitude, period
         self.wave_running = True
         self.wave_origin_s = None  # Next complete sample defines phase zero.
@@ -847,14 +909,6 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         try:
             if self.feedforward_points is not None:
                 requested = invert_curve(self.feedforward_points,self.setpoint)
-            elif self.allow_linear.isChecked():
-                ambient=float(self.ambient_input.text())
-                heat=float(self.heating_chi_input.text());cool=float(self.cooling_chi_input.text())
-                if not all(math.isfinite(v) for v in (ambient,heat,cool)) or min(heat,cool)<=0:
-                    raise ValueError("Invalid feedforward coefficients.")
-                self.feedforward_source="linear approximation (not a measured curve)"
-                error=self.setpoint-ambient
-                requested=error/(heat if error>=0 else cool)
             else:
                 raise ValueError("Feedforward source is unavailable.")
         except ValueError as error:
@@ -865,6 +919,8 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         direction="HEAT" if applied>=0 else "COOL"
         pwm=int(round(abs(applied)))
         self.proportional_output=self.integral_output=0.0
+        self.raw_controller_output = float("nan")  # Feedforward is not a raw P/PI command.
+        self.raw_controller_value.setText("—")
         self.requested_output=requested
         self.applied_output=float(pwm if direction=="HEAT" else -pwm)
         self.proportional_pwm_value.setText("0.00")
