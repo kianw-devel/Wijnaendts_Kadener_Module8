@@ -17,7 +17,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 
 # ---------- Settings to change before running ----------
-SERIAL_PORT = "/dev/cu.usbmodem1101"  # Change to your Arduino's serial port
+SERIAL_PORT = "/dev/cu.usbmodem101"  # Change to your Arduino's serial port
 BAUD_RATE = 9600
 WINDOW_DURATION_SECONDS = 600.0
 UPDATE_INTERVAL_MILLISECONDS = 100
@@ -34,40 +34,72 @@ PWM_LIMIT = 255
 
 # One shared field order ties the serial parser, CSV columns, and sensor plots together.
 CSV_COLUMNS = (
-    "time_s", "tec_C", "rod1_C", "rod2_C", "rod3_C", "rod4_C", "rod5_C",
-    "pwm", "heat_cool", "setpoint_C", "safety",
+    "time_ms", "run_state", "control_mode", "step", "Ta_C", "Tb_C", "period_s",
+    "setpoint_C", "feedforward_pwm", "TEC_C", "T1_C", "T2_C", "T3_C", "T4_C", "T5_C",
+    "controller_pwm", "heating_to_cooling_ratio", "signed_pwm", "safety",
+    "kp", "ki", "ua_pwm", "ub_pwm", "command_seq",
 )
-TEMPERATURE_COLUMNS = CSV_COLUMNS[1:7]
+TEMPERATURE_COLUMNS = ("tec_C", "rod1_C", "rod2_C", "rod3_C", "rod4_C", "rod5_C")
+MODE_CODES = {"Manual": "MANUAL", "Raw PWM sine": "RAW_SINE",
+              "Heating-only PWM sine": "RAW_HEAT", "Open-loop feedforward": "FEEDFORWARD",
+              "P-only": "P_ONLY", "PI": "PI"}
 TRACE_COLORS = ("#d95f02", "#0072B2", "#009E73", "#CC79A7", "#E6AB02", "#6A3D9A")
 
 
 def parse_measurement(line):
-    """Validate a complete DATA line; return original field text or None.
+    """Accept only complete Stage 1 records. Preserve every field verbatim.
 
-    The caller buffers bytes until newline. Headers and diagnostics never become
-    samples. Only setpoint may be nan: Arduino does not receive Python's setpoint.
-    Raw strings are retained so CSV values are not corrected or reformatted.
+    Return plotting aliases separately from the raw wire fields. nan means a
+    command field does not apply; temperatures must always be finite.
     """
     fields = line.strip().split(",")
     if len(fields) != len(CSV_COLUMNS) + 1 or fields[0] != "DATA":
         return None
-    record = dict(zip(CSV_COLUMNS, fields[1:]))
+    raw = dict(zip(CSV_COLUMNS, fields[1:]))
     try:
-        if not all(math.isfinite(float(record[key])) for key in CSV_COLUMNS[:8]):
+        if raw["run_state"] not in ("STOPPED", "RUNNING", "SAFETY", "TIMEOUT"):
             return None
-        if float(record["time_s"]) < 0:
+        if raw["control_mode"] not in MODE_CODES.values() or raw["safety"] not in ("OK", "SHUTDOWN", "TIMEOUT"):
             return None
-        pwm = int(record["pwm"])
-        if not 0 <= pwm <= PWM_LIMIT or record["heat_cool"] not in ("0", "1"):
+        for key in ("time_ms", "step", "command_seq"):
+            if int(raw[key]) < 0:
+                return None
+        for key in ("TEC_C", "T1_C", "T2_C", "T3_C", "T4_C", "T5_C"):
+            if math.isinf(float(raw[key])):
+                return None
+        if math.isnan(float(raw["TEC_C"])) and raw["safety"] != "SHUTDOWN":
             return None
-        setpoint = float(record["setpoint_C"])
-        if math.isinf(setpoint):
+        signed = int(raw["signed_pwm"])
+        if abs(signed) > PWM_LIMIT:
             return None
-        if record["safety"] not in ("OK", "SHUTDOWN"):
+        for key in ("Ta_C", "Tb_C", "period_s", "setpoint_C", "feedforward_pwm",
+                    "controller_pwm", "heating_to_cooling_ratio", "kp", "ki", "ua_pwm", "ub_pwm"):
+            if math.isinf(float(raw[key])):
+                return None
+        if raw["run_state"] != "RUNNING" and signed != 0:
             return None
     except (ValueError, OverflowError):
         return None
+    record = dict(raw)
+    record["_raw"] = raw
+    record["time_s"] = str(int(raw["time_ms"]) / 1000.0)
+    for local, wire in zip(TEMPERATURE_COLUMNS, ("TEC_C", "T1_C", "T2_C", "T3_C", "T4_C", "T5_C")):
+        record[local] = raw[wire]
+    record["pwm"] = str(abs(signed))
+    record["heat_cool"] = "1" if signed >= 0 else "0"
     return record
+
+
+def diagnostic_pwm(mode, elapsed_s, period_s, ua, ub):
+    """Raw diagnostic commands deliberately bypass heating/cooling compensation."""
+    if period_s < MINIMUM_PERIOD_S or not all(math.isfinite(v) for v in (elapsed_s, period_s, ua, ub)):
+        raise ValueError("Finite settings and a period of at least 100 s are required.")
+    if mode == "Raw PWM sine" and not 0 < ub <= PWM_LIMIT:
+        raise ValueError("Raw sine needs 0 < ub <= 255 PWM.")
+    if mode == "Heating-only PWM sine" and not (ua > ub > 0 and ua + ub <= PWM_LIMIT):
+        raise ValueError("Heating-only sine needs ua > ub > 0 and ua + ub <= 255.")
+    offset = ua if mode == "Heating-only PWM sine" else 0.0
+    return offset + ub * math.sin(2 * math.pi * elapsed_s / period_s)
 
 
 def calculate_p_control(setpoint, temperature, gain):
@@ -159,6 +191,11 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         self.last_valid_host_time = None
         self.output_stopped = True
         self.segment_id = 0
+        self.command_sequence = 0
+        self.serial_failed = False
+        self.diagnostic_ua = 40.0
+        self.diagnostic_ub = 10.0
+        self.last_wire_time_ms = None
         self.event_file = None
 
         # Create the manual controls and the live values shown above the plots.
@@ -185,7 +222,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.pwm_input, 1, 2)
 
         self.control_mode = QtWidgets.QComboBox()
-        self.control_mode.addItems(["Manual", "Open-loop feedforward", "P-only", "PI"])
+        self.control_mode.addItems(list(MODE_CODES))
         self.control_mode.currentTextChanged.connect(self.control_mode_changed)
         controls_layout.addWidget(QtWidgets.QLabel("Controller"), 2, 0)
         controls_layout.addWidget(self.control_mode, 2, 1)
@@ -275,11 +312,15 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         self.amplitude_input = QtWidgets.QLineEdit("10")
         self.period_input = QtWidgets.QLineEdit("100")
         self.ambient_input = QtWidgets.QLineEdit("22")
+        self.ua_input = QtWidgets.QLineEdit("40")
+        self.ub_input = QtWidgets.QLineEdit("10")
         self.heating_chi_input = QtWidgets.QLineEdit("0.4872434257285")
         self.cooling_chi_input = QtWidgets.QLineEdit("0.19566755027076152")
         for label, widget in (
             ("Mean Ta (°C)", self.mean_input), ("Amplitude Tb (°C)", self.amplitude_input),
             ("Period (s; minimum 100)", self.period_input),
+            ("Diagnostic mean ua (PWM; heating-only)", self.ua_input),
+            ("Diagnostic amplitude ub (PWM)", self.ub_input),
             ("Measured room temperature (°C)", self.ambient_input),
             ("Measured heating χ (°C/PWM)", self.heating_chi_input),
             ("Measured cooling χ (°C/PWM)", self.cooling_chi_input),
@@ -385,7 +426,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(central_widget)
 
         # Start with the TEC off and put the Arduino under serial control.
-        self.serial_port = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0)
+        self.serial_port = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0, write_timeout=0.25)
         self.send_control_command(0, "HEAT")
         self.csv_file = None
         self.csv_writer = None
@@ -393,7 +434,8 @@ class TemperatureWindow(QtWidgets.QMainWindow):
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.read_measurements)
-        self.timer.start(UPDATE_INTERVAL_MILLISECONDS)
+        if not self.serial_failed:
+            self.timer.start(UPDATE_INTERVAL_MILLISECONDS)
 
     def open_new_csv(self):
         """Create a uniquely named CSV for the current controller settings."""
@@ -409,8 +451,8 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         # Exclusive "x" mode above prevents overwriting any earlier run.
         self.csv_writer.writerow(CSV_COLUMNS)
         self.csv_file.flush()
-        # Keep host commands separate: the raw Arduino setpoint is unavailable.
-        # Match these rows to raw measurements using the same Arduino time_s.
+        # The primary CSV is the complete Arduino record. This supplemental log
+        # records the NEXT host decision, matched using Arduino time_s.
         command_path = path.with_name(path.stem + "_commands.csv")
         self.command_file = open(command_path, "x", newline="")
         self.command_writer = csv.writer(self.command_file)
@@ -430,7 +472,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             event="acquisition_metadata", serial_port=SERIAL_PORT, baud_rate=BAUD_RATE,
             temperature_limit_C=MAXIMUM_SETPOINT_C, serial_stale_seconds=SERIAL_STALE_SECONDS,
             csv_columns=CSV_COLUMNS, waveform_clock="Arduino time_s; phase zero at first sample after Start",
-            command_semantics="Host command sent after acquiring the timestamped DATA record; raw pwm reports Arduino output",
+            command_semantics="Host command sent after acquiring the timestamped DATA record; primary signed_pwm reports Arduino output",
             gui_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         )) + "\n")
         self.event_file.flush()
@@ -479,8 +521,62 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                     or self.last_valid_host_time is None
                     or time.monotonic() - self.last_valid_host_time > SERIAL_STALE_SECONDS):
             pwm = 0
-        command = f"SET PWM {pwm} DIR {direction}\n"
-        self.serial_port.write(command.encode("ascii"))
+        signed = int(pwm if direction == "HEAT" else -pwm)
+        mode = self.control_mode.currentText()
+        running = not self.output_stopped
+        diagnostic = mode in ("Raw PWM sine", "Heating-only PWM sine")
+        nan = float("nan")
+        ff = self.requested_output if running and mode == "Open-loop feedforward" else nan
+        raw = self.raw_controller_output if running and self.feedback_enabled() else nan
+        try:
+            ratio = self.cooling_ratio() if mode in ("P-only", "PI") else nan
+        except ValueError:
+            ratio = nan
+        self.command_sequence += 1
+        # A single atomic frame carries the PWM and its metadata. Arduino echoes
+        # this applied frame in DATA; a later host decision never rewrites a row.
+        values = ["FRAME", "RUNNING" if running else "STOPPED", MODE_CODES[mode],
+                  self.segment_id, self.wave_mean_c if self.wave_running and not diagnostic else nan,
+                  self.wave_amplitude_c if self.wave_running and not diagnostic else nan,
+                  self.wave_period_s if self.wave_running else nan,
+                  self.setpoint if not diagnostic else nan, ff, raw, ratio, signed,
+                  self.proportional_gain, self.integral_gain,
+                  self.diagnostic_ua if diagnostic else nan,
+                  self.diagnostic_ub if diagnostic else nan, self.command_sequence]
+        command = ",".join(f"{v:.6g}" if isinstance(v, float) else str(v) for v in values) + "\n"
+        if self.serial_failed:
+            self.output_stopped = True
+            self.wave_running = False
+            return
+        try:
+            payload = command.encode("ascii")
+            if self.serial_port.write(payload) != len(payload):
+                raise serial.SerialTimeoutException("Incomplete serial command")
+        except (serial.SerialException, OSError) as error:
+            self.handle_serial_failure(error)
+
+    def handle_serial_failure(self, error):
+        """Never retry a blocked USB write from the GUI thread or auto-restart."""
+        if self.serial_failed:
+            return
+        self.serial_failed = True
+        self.output_stopped = True
+        self.wave_running = False
+        self.wave_origin_s = None
+        self.integral_error = 0.0
+        self.proportional_output = self.integral_output = 0.0
+        self.requested_output = self.applied_output = self.raw_controller_output = 0.0
+        self.set_pwm_value(0)
+        if hasattr(self, "timer"):
+            self.timer.stop()
+        self.wave_status.setText(
+            f"Serial connection failed: {error}. Turn TEC power off; reconnect USB and restart GUI. "
+            "A zero command could not be confirmed; Arduino has a 4 s watchdog."
+        )
+        self.log_event("serial_failure_output_inhibited")
+        if getattr(self, "event_file", None) is not None:
+            self.event_file.write(json.dumps(dict(event="serial_error_detail", error=str(error))) + "\n")
+            self.event_file.flush()
 
     def feedback_enabled(self):
         """Return True when either feedback controller is selected."""
@@ -639,7 +735,16 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         self.send_control_command(self.pwm_slider.value())
 
     def read_measurements(self):
-        """Read all currently available lines and process valid ones."""
+        """Handle USB disconnects without crashing or freezing the event loop."""
+        if self.serial_failed:
+            return
+        try:
+            self._read_measurements()
+        except (serial.SerialException, OSError) as error:
+            self.handle_serial_failure(error)
+
+    def _read_measurements(self):
+        """Read complete records; cap work per tick so controls stay responsive."""
         if (not self.output_stopped and self.last_valid_host_time is not None
                 and time.monotonic() - self.last_valid_host_time > SERIAL_STALE_SECONDS):
             self.stop_output()
@@ -647,16 +752,24 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         if self.serial_port.in_waiting:
             self.serial_buffer += self.serial_port.read(self.serial_port.in_waiting)
 
-        while b"\n" in self.serial_buffer:
+        processed = 0
+        while b"\n" in self.serial_buffer and processed < 20:
+            if self.serial_failed:
+                break
+            processed += 1
             raw_line, self.serial_buffer = self.serial_buffer.split(b"\n", 1)
             # Process complete newline-terminated records only. Never drop bad bytes
             # silently: a corrupted number must not become a valid measurement.
+            line = ""
             try:
                 line = raw_line.decode("ascii")
                 measurement = parse_measurement(line)
             except UnicodeDecodeError:
                 measurement = None
             if measurement is None:
+                if line.startswith("DATA,time_s,"):
+                    self.stop_output()
+                    self.wave_status.setText("Old Arduino format: upload the updated Module 8 sketch before continuing.")
                 self.rejected_lines += 1  # Includes headers and diagnostics ignored.
                 self.update_line_counts()
                 continue
@@ -664,8 +777,13 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             self.update_line_counts()
 
             # Store every accepted RAW field before processing the next command.
-            self.csv_writer.writerow([measurement[key] for key in CSV_COLUMNS])
+            self.csv_writer.writerow([measurement["_raw"][key] for key in CSV_COLUMNS])
             self.csv_file.flush()  # Flush every sample, including long acquisitions.
+            wire_time = int(measurement["time_ms"])
+            if self.last_wire_time_ms is not None and wire_time > self.last_wire_time_ms + 5000:
+                self.log_event("missing_record_gap_over_5s")
+                self.wave_status.setText("Record gap over 5 s: inspect saved data.")
+            self.last_wire_time_ms = wire_time
             time_seconds = float(measurement["time_s"])
             temperature = float(measurement["tec_C"])
             pwm = int(measurement["pwm"])
@@ -699,6 +817,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             rod_base = float(measurement["rod1_C"])
             # T1 is monitored for the Module 8 rod-base limit; A0 still supplies PI.
             if (measurement["safety"] != "OK" or temperature <= 5
+                    or not math.isfinite(temperature) or not math.isfinite(rod_base)
                     or temperature >= MAXIMUM_SETPOINT_C or rod_base >= 56.0):
                 self.latest_temperature = None
                 self.stop_output()
@@ -712,6 +831,8 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                 self.applied_pwm_value.setText("0")
             elif self.output_stopped:
                 self.send_control_command(0, "HEAT")
+            elif self.control_mode.currentText() in ("Raw PWM sine", "Heating-only PWM sine"):
+                self.update_diagnostic_control(time_seconds)
             elif self.control_mode.currentText() == "Open-loop feedforward":
                 self.update_feedforward_control()
             elif self.feedback_enabled():
@@ -728,8 +849,8 @@ class TemperatureWindow(QtWidgets.QMainWindow):
                 self.requested_pwm_value.setText(f"{self.requested_output:.2f}")
                 self.applied_pwm_value.setText(f"{self.applied_output:.0f}")
 
-            # Host setpoint and controller command at this Arduino timestamp.
-            # This resolves nan for analysis without altering any raw Arduino field.
+            # Supplemental NEXT host decision. The primary DATA row above already
+            # contains the actual echoed command that belonged to the measurement.
             self.command_writer.writerow([
                 time_seconds, self.setpoint, self.control_mode.currentText(),
                 self.proportional_gain, self.integral_gain,
@@ -746,7 +867,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             self.command_file.flush()
             error = self.setpoint - temperature
 
-            setpoint = self.setpoint
+            setpoint = float(measurement["setpoint_C"])
             self.times.append(time_seconds)
             # Store uncorrected temperatures under the same names used in CSV.
             for key in TEMPERATURE_COLUMNS:
@@ -766,7 +887,7 @@ class TemperatureWindow(QtWidgets.QMainWindow):
             self.direction_value.setText("HEAT" if heat_cool else "COOL")
             self.time_value.setText(f"{time_seconds:.2f} s")
             self.error_value.setText(f"{error:.2f} C")
-            self.current_setpoint_value.setText(f"{self.setpoint:.2f} C")
+            self.current_setpoint_value.setText(f"{setpoint:.2f} C")
             oldest_time = time_seconds - WINDOW_DURATION_SECONDS
             while self.times and self.times[0] < oldest_time:
                 self.times.popleft()
@@ -868,13 +989,19 @@ class TemperatureWindow(QtWidgets.QMainWindow):
     def start_waveform(self, checked=False):
         """Validate the whole requested range before allowing sine output."""
         try:
+            if self.serial_failed:
+                raise ValueError("Serial connection failed. Keep TEC power off and restart the GUI after reconnecting USB.")
             mean, amplitude, period = [float(w.text()) for w in
                                       (self.mean_input, self.amplitude_input, self.period_input)]
             if not all(math.isfinite(v) for v in (mean, amplitude, period)):
                 raise ValueError("Settings must be finite numbers.")
             if amplitude < 0 or period < MINIMUM_PERIOD_S:
                 raise ValueError("Amplitude must be nonnegative; period must be at least 100 s.")
-            if mean-amplitude < MINIMUM_SETPOINT_C or mean+amplitude > MAXIMUM_SETPOINT_C:
+            diagnostic = self.control_mode.currentText() in ("Raw PWM sine", "Heating-only PWM sine")
+            ua, ub = float(self.ua_input.text()), float(self.ub_input.text())
+            if diagnostic:
+                diagnostic_pwm(self.control_mode.currentText(), 0, period, ua, ub)
+            if not diagnostic and (mean-amplitude < MINIMUM_SETPOINT_C or mean+amplitude > MAXIMUM_SETPOINT_C):
                 raise ValueError("Entire waveform must remain between 5 and 56 °C.")
             if self.control_mode.currentText() == "Manual":
                 raise ValueError("Choose Open-loop feedforward, P-only, or PI first.")
@@ -896,13 +1023,35 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         self.stop_output()
         self.ratio_value.setText(f"{heat/cool:.4f}")
         self.wave_mean_c, self.wave_amplitude_c, self.wave_period_s = mean, amplitude, period
+        self.diagnostic_ua, self.diagnostic_ub = ua, ub
         self.wave_running = True
         self.wave_origin_s = None  # Next complete sample defines phase zero.
         self.output_stopped = False
         self.segment_id += 1
         self.setpoint = mean
         self.wave_status.setText(f"Sine active: {mean-amplitude:g}–{mean+amplitude:g} °C, period {period:g} s. T1 is the analysis boundary.")
+        if diagnostic:
+            self.wave_status.setText(f"Raw PWM diagnostic: ua={ua:g}, ub={ub:g}, period {period:g} s; no compensation. Mean temperature is not controlled.")
         self.log_event("sine_start_or_settings_change")
+
+    def update_diagnostic_control(self, time_seconds):
+        """Apply raw PWM sine; neither diagnostic uses P/I or cooling scaling."""
+        if self.wave_origin_s is None:
+            self.stop_output()
+            return
+        requested = diagnostic_pwm(self.control_mode.currentText(),
+                                   time_seconds-self.wave_origin_s, self.wave_period_s,
+                                   self.diagnostic_ua, self.diagnostic_ub)
+        self.proportional_output = self.integral_output = 0.0
+        self.raw_controller_output = float("nan")
+        self.requested_output = requested
+        self.applied_output = float(round(requested))
+        direction = "HEAT" if requested >= 0 else "COOL"
+        self.set_pwm_value(abs(int(self.applied_output)))
+        self.raw_controller_value.setText("N/A (raw diagnostic)")
+        self.requested_pwm_value.setText(f"{requested:.2f}")
+        self.applied_pwm_value.setText(f"{self.applied_output:.0f}")
+        self.send_control_command(abs(int(self.applied_output)), direction)
 
     def update_feedforward_control(self):
         """Invert equilibrium T(u), without adding P or I feedback."""
@@ -944,9 +1093,10 @@ class TemperatureWindow(QtWidgets.QMainWindow):
         """Turn the TEC off, then close files and the serial connection."""
         self.timer.stop()
         try:
-            self.send_control_command(0, "HEAT")
-            self.serial_port.flush()
-        except serial.SerialException:
+            self.stop_output()
+            # Do not flush the serial device: a disconnected USB driver may
+            # block indefinitely. Writes already have a finite timeout.
+        except (serial.SerialException, OSError):
             pass
         self.serial_port.close()
         self.csv_file.close()

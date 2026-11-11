@@ -1,0 +1,6 @@
+time_s,gui_setpoint_C,controller_mode,kp_pwm_per_C,ki_pwm_per_C_s,requested_signed_pwm,commanded_signed_pwm,waveform,Ta_C,Tb_C,period_s,wave_origin_s,phase_rad,segment_id,ambient_C,heating_chi_C_per_pwm,cooling_chi_C_per_pwm,feedforward_source,output_stopped,host_monotonic_s,raw_controller_signed_pwm,cooling_multiplier_r,measured_rod_base_C
+0.875,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872434257285,0.19566755027076152,No measured curve loaded,True,131875.101066166,0.0,2.4902,24.198181
+1.678,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872434257285,0.19566755027076152,No measured curve loaded,True,131875.891888958,0.0,2.4902,24.198181
+2.499,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872434257285,0.19566755027076152,No measured curve loaded,True,131876.692536625,0.0,2.4902,24.19809
+3.321,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872434257285,0.19566755027076152,No measured curve loaded,True,131877.492565583,0.0,2.4902,24.198181
+4.143,32.5,Manual,1.0,0.08,0.0,0.0,constant,40.0,10.0,100.0,,,0,22,0.4872434257285,0.19566755027076152,No measured curve loaded,True,131878.391503166,0.0,2.4902,24.198181

@@ -1,0 +1,4 @@
+step,period_s,start_arduino_s,end_arduino_s,complete_cycles,status
+3,500.0,117.99,953.28,1,startup-contaminated; one complete cycle only
+4,200.0,954.959,1495.948,2,limited repeatability; period-transition influence
+5,100.0,1497.629,1935.7,4,approximately repeatable TEC; not certified for all six sensors

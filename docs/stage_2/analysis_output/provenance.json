@@ -1,0 +1,17 @@
+{
+  "gui_sha256": "e399eea22f79e90d0ade24bb360bad8382f17b38d8f0f0363e9e5441614eafee",
+  "arduino_sha256": "52fed5d3c1eee65c5f80d272aebdba0c6fd00b0b2cd2fb0c4e7d7c5b04401d92",
+  "raw_file": "python/run_data/run_20261109_111119_352877_manual_kp1_ki0p08.csv",
+  "raw_sha256": "fbdf1eb4a069bc7ddfebf3ce366c346a11ae161f77a06412c773b9ca219d0002",
+  "rows": 2617,
+  "ambient_analysis_C": 23.52,
+  "ambient_provenance": "user-approved average of six unpowered sensors; not independent air measurement",
+  "logged_ambient_C": [
+    "22"
+  ],
+  "analysis_sha256": "4a4c4a8d607ac4de9a55d42fc61e41debad58cf1dabda22851c32c2e8e81b4fb",
+  "event_sha256": "43deb6ffc17c49b748142b84f5cc691997f6b7acda544984b159b5c4b5ad979d",
+  "input_snapshot_directory": "docs/stage_2/analysis_output/input_snapshot_fbdf1eb4a069",
+  "live_file_appended_during_analysis": true,
+  "snapshot_preserved_exactly": true
+}

@@ -1,0 +1,6 @@
+time_ms,run_state,control_mode,step,Ta_C,Tb_C,period_s,setpoint_C,feedforward_pwm,TEC_C,T1_C,T2_C,T3_C,T4_C,T5_C,controller_pwm,heating_to_cooling_ratio,signed_pwm,safety,kp,ki,ua_pwm,ub_pwm,command_seq
+875,STOPPED,MANUAL,0,nan,nan,nan,nan,nan,24.060272,24.198181,23.969788,24.121948,24.426880,24.107025,nan,nan,0,OK,nan,nan,nan,nan,0
+1678,STOPPED,MANUAL,0,nan,nan,nan,32.500000,nan,24.057983,24.198181,23.969788,24.122009,24.426880,24.110748,nan,nan,0,OK,1.000000,0.080000,nan,nan,2
+2499,STOPPED,MANUAL,0,nan,nan,nan,32.500000,nan,24.058228,24.198090,23.969788,24.122009,24.426941,24.115845,nan,nan,0,OK,1.000000,0.080000,nan,nan,3
+3321,STOPPED,MANUAL,0,nan,nan,nan,32.500000,nan,24.056946,24.198181,23.969788,24.122009,24.427094,24.118805,nan,nan,0,OK,1.000000,0.080000,nan,nan,4
+4143,STOPPED,MANUAL,0,nan,nan,nan,32.500000,nan,24.057983,24.198181,23.969788,24.122009,24.427094,24.120361,nan,nan,0,OK,1.000000,0.080000,nan,nan,5

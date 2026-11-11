@@ -1,6 +1,10 @@
 # Module 8: Stage 1 — Establish the boundary condition
 
-Module 7 is unchanged. The Module 8 Arduino copy still acquires TEC/A0 and T1–T5/A1–A5, applies the same serial commands and H-bridge outputs, starts at zero PWM, and retains its A0 5/60 °C shutdown. Python supplies the sinusoidal drive and controller.
+## Updated Stage 1 record and diagnostic modes
+
+The current Arduino and GUI now use the complete Stage 1 DATA record. Read [the protocol and power-off verification steps](docs/stage_1/README.md) before running. Upload the updated sketch and restart the updated GUI together; old raw files retain their original format. Two raw-PWM diagnostic modes are now available in addition to the corrected feedforward/P/PI comparison.
+
+Module 7 is unchanged. The Module 8 Arduino copy acquires TEC/A0 and T1–T5/A1–A5, accepts atomic FRAME commands as well as the legacy manual command, preserves the H-bridge pins, starts at zero PWM, and retains its A0 5/60 °C shutdown. Python supplies the sinusoidal drive and controller.
 
 ## Current software
 
@@ -30,7 +34,7 @@ PI's candidate integral is accepted only if the **compensated** candidate does n
 
 ## Safety and stopping
 
-STOP OUTPUT sends zero PWM, clears integral state, stops the sine, and keeps recording. A0 interlock, host A0 outside (5,56) °C, measured T1 ≥ 56 °C, stale valid DATA for 5 s, or an Arduino clock reset stops output and requires explicit restart. T1 monitoring is a Python guard, not an independent Arduino/hardware interlock. Arduino retains its independent A0 5/60 °C limits. No software can deliver a stop command across a disconnected serial cable; retain hardware safety and supervision.
+STOP OUTPUT sends zero PWM, clears integral state, stops the sine, and keeps recording. A0 interlock, host A0 outside (5,56) °C, measured T1 ≥ 56 °C, stale valid DATA for 5 s, or an Arduino clock reset stops output and requires explicit restart. The updated sketch also guards T1 >=56 °C and drops PWM after 4 s without a valid command; these supplement the independent A0 5/60 °C limits and the physical cutoff. No software can deliver a stop command across a disconnected serial cable; retain hardware safety and supervision.
 
 Test with TEC power disconnected before powered operation. New run CSV stops output and opens new files; do not use it between modes when retaining one continuous comparison. Close also sends zero PWM.
 
@@ -38,9 +42,9 @@ Test with TEC power disconnected before powered operation. New run CSV stops out
 
 Each run creates unique files in `python/run_data/`:
 
-- Raw CSV: unchanged `time_s,tec_C,rod1_C,rod2_C,rod3_C,rod4_C,rod5_C,pwm,heat_cool,setpoint_C,safety` records, flushed every sample. Raw setpoint may remain nan.
-- `_commands.csv`: actual GUI setpoint, mode, gains, uncompensated raw controller total, compensated request, commanded signed PWM, cooling multiplier r, measured T1, Ta/Tb/period/phase, ambient/coefficient inputs, stop state and host time. Match on Arduino time. The host command is sent AFTER that measurement; raw PWM reports what Arduino applied for the received record.
-- `_events.jsonl`: mode/settings/start/stop changes, loaded curve points/source, acquisition settings and GUI hash. No silent deletion of transients or setting changes.
+- Raw CSV: complete Arduino Stage 1 record, beginning `time_ms,run_state,control_mode,step`; see the linked protocol for all fields. Every accepted record is flushed without changing raw values.
+- `_commands.csv`: supplemental next host command and settings, timestamped against the measurement that prompted it.
+- `_events.jsonl`: mode/settings/start/stop changes, loaded curve contents/source, acquisition settings and GUI hash.
 
 The display shows six labeled traces, the requested setpoint, live values, raw/compensated command traces, and accepted/rejected counts. The rolling display does not trim the full CSV.
 
